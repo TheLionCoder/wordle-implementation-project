@@ -5,7 +5,7 @@ mod solver;
 
 use std::{borrow::Cow, collections::HashSet, num::NonZeroU8};
 
-include!(concat!(env!("OUT_DIR"), "/dictionary.rs"));
+pub const MAX_MASK_ENUM: usize = 5 * 5 * 5 * 5 * 5;
 
 pub trait Guesser {
     fn guess(&mut self, history: &[Guess]) -> String;
@@ -64,6 +64,30 @@ impl Correctness {
 }
 
 
+#[derive( Clone, Copy, PartialEq, Eq)]
+#[repr(transparent)]
+struct PacketCorrectness(NonZeroU8);
+
+impl From<[Correctness; 5]> for PacketCorrectness {
+    fn from(correct: [Correctness; 5]) -> Self {
+        let packed = correct.iter().fold(0, |acc, c| {
+            acc * 3 +
+            match c {
+                Correctness::Correct => 0,
+                Correctness::Misplaced => 1,
+                Correctness::Wrong => 2
+            }
+        });
+        Self(NonZeroU8::new(packed + 1).unwrap())
+    }
+}
+
+impl From<PacketCorrectness> for u8 {
+    fn from(this: PacketCorrectness) -> Self {
+        this.0.get() -1
+    }
+}
+
 pub struct Wordle {
     dictionary: HashSet<&'static str>
 }
@@ -112,7 +136,7 @@ impl Default for Wordle {
 impl Wordle {
     pub fn new() -> Self {
         Self {
-            dictionary: HashSet::from_iter(DICTIONARY.iter().copied()
+            dictionary: HashSet::from_iter(DICTIONARY.lines().iter().copied()
                 .map(|(word, _)| word))
         }
     }
@@ -140,4 +164,64 @@ impl Wordle {
         }
         None
     }
+}
+
+#[cfg(test)]
+macro_rules! guessers {
+    (|$history:ident | $impl:block) => {{
+        struct G;
+        $impl $create::Guesser for G {
+            fn guess(&mut self, $history: &[Guess]) -> String {
+                $impl
+            }
+        }
+        G
+    }};
+}
+
+#[cfg(test)]
+macro_rules! mask {
+    (C) => {$crate::Correctness::Correct};
+    (M) => {$crate::Correctness::Misplaced};
+    (W) => {$crate::Correctness::Wrong};
+    ($($c:tt)+) => {
+        $(mask!($c)), +
+    }
+}
+
+#[cfg(test)]
+mod guess_matcher {
+    use crate::Guess;
+    use std::borrow::{Borrow, Cow};
+
+    macro_rules! check {
+        ($prev:literal + [$($mask:tt)+] allows $next:literal) => {
+            assert!(Guess {
+                word: Cow::Borrowed($prev),
+                mask: mask![$($mask ) +]
+            }
+            .matches($next)
+            );
+            assert_eq!($crate::Correctness::compute($next, $prev), mask![$($mask) +]);
+        };
+        ($prev:literal + [$($mask:tt)+] disallows $next:literal) => {
+            assert!(!Guess {
+                word: Cow::Borrowed($prev),
+                mask: mask![$($mssk)+]
+            }
+            .matches($next));
+            assert_ne!($crate::Correctness:compute($next, $prev), $mask![$($mask )+]);
+        }
+    }
+
+}
+
+#[test]
+fn from_jon() {
+    check!("abcde" + [C C C C C] allows "abcde");
+    check!("abcdf" + [C C C C C] disallows "abcde");
+    check!("abcde" + [W W W W W] allows "fghij");
+    check!("abcde" + [M M M M M] allows "eabcd");
+    check!("baaa" + [W C M W W] allows "aaccc");
+    check!("baaa" + [W C M W W] disallows "caacc");
 }
